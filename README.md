@@ -1,9 +1,12 @@
 # systemd-boot-snapper-tools
 
 A lightweight, robust suite of tools for Arch Linux to bridge the gap between **Snapper** snapshots and **systemd-boot** using Unified Kernel Images (UKIs).
+To have an idea of the kind os setup this repo supports, check 
 
-## Why this exists?
-Standard Snapper setups often fail to boot snapshots correctly because the kernel/modules version in the snapshot doesn't match the current kernel on the EFI partition. This suite solves that by:
+[https://github.com/n7-on-3o/stowaway/blob/main/arch-linux-sdb-post-install.md](https://github.com/n7-on-3o/stowaway/blob/main/arch-linux-sdb-post-install.md "Arch Linux post install guide")
+
+
+## Features
 1. **Kernel Pooling:** Archiving the exact kernel (UKI) used for every snapshot in a versioned pool.
 2. **Automated Entries:** Creating `systemd-boot` entries automatically via a Snapper plugin.
 3. **Kernel rollback:** Automatically restoring the correct kernel to the main boot path during a rollback.
@@ -25,7 +28,7 @@ Standard Snapper setups often fail to boot snapshots correctly because the kerne
 
 ### Install from Git
 ```bash
-git clone [https://github.com/youruser/systemd-boot-snapper-tools.git](https://github.com/youruser/systemd-boot-snapper-tools.git)
+git clone https://github.com/n7-on-3o/systemd-boot-snapper-tools.git
 cd systemd-boot-snapper-tools
 sudo make install
 ```
