@@ -1,5 +1,5 @@
 # systemd-boot-snapper-tools Makefile
-PREFIX ?= /usr
+PREFIX ?= /usr/local
 BINDIR = $(PREFIX)/bin
 PLUGINDIR = /usr/lib/snapper/plugins
 SRC = src

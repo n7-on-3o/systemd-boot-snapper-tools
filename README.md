@@ -27,7 +27,7 @@ Standard Snapper setups often fail to boot snapshots correctly because the kerne
 ```bash
 git clone [https://github.com/youruser/systemd-boot-snapper-tools.git](https://github.com/youruser/systemd-boot-snapper-tools.git)
 cd systemd-boot-snapper-tools
-makepkg -si
+sudo make install
 ```
 
 ## How it Works
