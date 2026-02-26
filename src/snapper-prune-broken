@@ -6,36 +6,63 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
-# 1. Mount Btrfs root to see everything
-mkdir -p /tmp/btrfs_admin
-mount $(findmnt -no SOURCE /) -o subvolid=5 /tmp/btrfs_admin
-cd /tmp/btrfs_admin || exit
+# 1. Handle Retention Argument
+KEEP_DAYS=${1:-7}
+
+if ! [[ "$KEEP_DAYS" =~ ^[0-9]+$ ]]; then
+    echo "Error: Retention days must be a number."
+    echo "Usage: snapper-prune-broken [days_to_retain]"
+    exit 1
+fi
+
+# 2. Mount Btrfs root using robust discovery
+PRUNE_MNT="/run/snapper_prune_mnt"
+mkdir -p "$PRUNE_MNT"
+ROOT_DEV=$(findmnt -nvo SOURCE / | sed 's/\[.*\]//')
+
+echo "Mounting Btrfs root device ($ROOT_DEV) to $PRUNE_MNT..."
+if ! mount "$ROOT_DEV" -o subvolid=5 "$PRUNE_MNT"; then
+    echo "Error: Could not mount Btrfs root."
+    exit 1
+fi
+
+cd "$PRUNE_MNT" || exit 1
 
 echo "--- Searching for broken/archived subvolumes ---"
 
-# 2. Cleanup nested subvolumes in deleted snapshots
-# Snapper sometimes leaves the directory structure if the subvolume delete fails
+# 3. Cleanup orphaned snapshot directories
 for snap_dir in @snapshots/*; do
     if [[ -d "$snap_dir" && ! -f "$snap_dir/info.xml" ]]; then
-        echo "Found orphaned snapshot directory: $snap_dir (Deleting nested contents...)"
-        # Use btrfs sub delete recursively for any hidden sub-layers
-        find "$snap_dir" -type d -exec btrfs subvolume delete {} + 2>/dev/null
+        echo "Found orphaned snapshot directory: $snap_dir"
+        # Delete nested subvolumes first
+        find "$snap_dir" -mindepth 1 -type d -exec btrfs subvolume delete {} + 2>/dev/null
         rm -rf "$snap_dir"
+        echo "Done: Cleared orphaned directory $snap_dir"
     fi
 done
 
-# 3. Cleanup archived rollbacks older than X days
-# Defaulting to 7 days to be safe
-KEEP_DAYS=7
-echo "Cleaning up rollback backups older than $KEEP_DAYS days..."
-find . -maxdepth 1 -name "@_backup_*" -type d -mtime +$KEEP_DAYS | while read -r backup; do
-    echo "Pruning old backup: $backup"
-    btrfs subvolume delete "$backup" || rm -rf "$backup"
+# 4. Cleanup archived rollbacks
+if [[ "$KEEP_DAYS" -eq 0 ]]; then
+    echo "Retention set to 0: Locating ALL rollback backups..."
+    FIND_CMD=(find . -maxdepth 1 -name "@_backup_*" -type d)
+else
+    echo "Locating rollback backups older than $KEEP_DAYS days..."
+    FIND_CMD=(find . -maxdepth 1 -name "@_backup_*" -type d -mtime +"$KEEP_DAYS")
+fi
+
+# Execute the search and prune with verbose output
+"${FIND_CMD[@]}" | while read -r backup; do
+    echo "Targeting backup: $backup"
+    if btrfs subvolume delete "$backup" 2>/dev/null || rm -rf "$backup"; then
+        echo "Successfully pruned: $backup"
+    else
+        echo "Failed to prune: $backup"
+    fi
 done
 
-# 4. Clean up
+# 5. Cleanup
 cd /
-umount /tmp/btrfs_admin
-rmdir /tmp/btrfs_admin
+umount "$PRUNE_MNT"
+rmdir "$PRUNE_MNT"
 
 echo "--- Pruning Complete ---"

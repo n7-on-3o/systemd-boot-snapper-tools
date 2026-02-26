@@ -8,52 +8,95 @@ fi
 
 SNAP_ID=$1
 BACKUP_NAME="@_backup_$(date +%Y%m%d_%H%M%S)"
-ESP_MOUNT="/boot"
+
+# --- ESP DETECTION  ---
+# Use bootctl to find the ESP path
+ESP_MOUNT=$(bootctl -p 2>/dev/null)
+
+# Fallback: If bootctl fails, check common mount points
+if [[ -z "$ESP_MOUNT" ]]; then
+    for path in /efi /boot /boot/efi; do
+        if mountpoint -q "$path" || [[ -d "$path/EFI" ]]; then
+            ESP_MOUNT="$path"
+            break
+        fi
+    done
+fi
+
+# Exit if no ESP is detected to avoid errors
+if [[ -z "$ESP_MOUNT" ]]; then
+    echo "Error: No EFI System Partition detected."
+    exit 1
+fi
 
 if [[ -z "$SNAP_ID" ]]; then
     echo "Usage: snapper-rollback <snapshot-id>"
     exit 1
 fi
 
-# 1. Verification
-SNAP_PATH="/.snapshots/${SNAP_ID}/snapshot"
+if [[ -z "$SNAP_ID" ]]; then
+    echo "Usage: snapper-rollback <snapshot-id>"
+    exit 1
+fi
+
+echo "--- Preparing Environment ---"
+
+# 1. Setup writable mount point in RAM
+RECOVERY_MNT="/run/snapper_rollback_mnt"
+mkdir -p "$RECOVERY_MNT"
+
+# 2. Extract ONLY the block device (stripping the [subvolume] part)
+# This uses findmnt to get the source device and cut to remove the bracketed part
+ROOT_DEV=$(findmnt -nvo SOURCE / | sed 's/\[.*\]//')
+
+echo "Mounting Btrfs root device ($ROOT_DEV) to $RECOVERY_MNT..."
+if ! mount "$ROOT_DEV" -o subvolid=5 "$RECOVERY_MNT"; then
+    echo "Error: Failed to mount Btrfs root (ID 5)."
+    exit 1
+fi
+
+# 3. Verification
+SNAP_PATH="$RECOVERY_MNT/@snapshots/${SNAP_ID}/snapshot"
 if [[ ! -d "$SNAP_PATH" ]]; then
-    echo "Error: Snapshot ${SNAP_ID} does not exist."
+    echo "Error: Snapshot ${SNAP_ID} not found at $SNAP_PATH"
+    umount "$RECOVERY_MNT"
     exit 1
 fi
 
 echo "--- Starting Rollback to Snapshot ${SNAP_ID} ---"
 
-# 2. Mount Btrfs Root (ID 5)
-mkdir -p /tmp/btrfs_root
-mount $(findmnt -no SOURCE /) -o subvolid=5 /tmp/btrfs_root
+# 4. Swap Subvolumes
+if [[ -d "$RECOVERY_MNT/@" ]]; then
+    echo "Archiving current @ to ${BACKUP_NAME}..."
+    mv "$RECOVERY_MNT/@" "$RECOVERY_MNT/${BACKUP_NAME}"
+else
+    echo "Warning: Base @ subvolume not found. Creating new one from snapshot."
+fi
 
-# 3. Swap Subvolumes
-echo "Archiving current @ to ${BACKUP_NAME}..."
-mv /tmp/btrfs_root/@ "/tmp/btrfs_root/${BACKUP_NAME}"
+echo "Creating writable clone of snapshot ${SNAP_ID}..."
+btrfs subvolume snapshot "$SNAP_PATH" "$RECOVERY_MNT/@"
 
-echo "Creating writable clone of snapshot ${SNAP_ID} as @..."
-btrfs subvolume snapshot "/tmp/btrfs_root/@snapshots/${SNAP_ID}/snapshot" /tmp/btrfs_root/@
+# 5. Kernel Synchronization
+if [[ -d "$ESP_MOUNT/EFI" ]]; then
+    # Locate the default UKI (e.g., arch-linux.efi)
+    MASTER_UKI=$(ls "$ESP_MOUNT"/EFI/Linux/*.efi 2>/dev/null | head -n1)
+    # Locate the specific UKI for this snapshot
+    CONF_FILE="$ESP_MOUNT/loader/entries/@snapshot-${SNAP_ID}.conf"
 
-# 4. Kernel Synchronization
-# Ensures the main 'arch-linux.efi' matches the snapshot we just restored
-echo "Synchronizing Master UKI with snapshot kernel..."
-MASTER_UKI=$(ls "$ESP_MOUNT"/EFI/Linux/*.efi 2>/dev/null | head -n1)
-CONF_FILE="$ESP_MOUNT/loader/entries/@snapshot-${SNAP_ID}.conf"
-
-if [[ -f "$CONF_FILE" && -n "$MASTER_UKI" ]]; then
-    POOL_REL_PATH=$(grep "^linux" "$CONF_FILE" | awk '{print $2}')
-    POOL_FULL_PATH="${ESP_MOUNT}${POOL_REL_PATH}"
-
-    if [[ -f "$POOL_FULL_PATH" ]]; then
-        cp -f "$POOL_FULL_PATH" "$MASTER_UKI"
-        echo "Master UKI updated: $(basename "$MASTER_UKI") now matches Snapshot ${SNAP_ID}."
+    if [[ -f "$CONF_FILE" && -n "$MASTER_UKI" ]]; then
+        mount -o remount,rw "$ESP_MOUNT" 2>/dev/null
+        POOL_REL_PATH=$(grep "^linux" "$CONF_FILE" | awk '{print $2}')
+        if [[ -f "${ESP_MOUNT}${POOL_REL_PATH}" ]]; then
+            cp -f "${ESP_MOUNT}${POOL_REL_PATH}" "$MASTER_UKI"
+            echo "Master UKI updated to match Snapshot ${SNAP_ID}."
+        fi
     fi
 fi
 
-# 5. Cleanup
-umount /tmp/btrfs_root
-rmdir /tmp/btrfs_root
+# 6. Cleanup
+echo "Cleaning up..."
+umount "$RECOVERY_MNT"
+rmdir "$RECOVERY_MNT"
 
 echo "--- Rollback Complete ---"
-echo "Reboot now to enter your restored system."
+echo "You are currently still in the read-only snapshot. Reboot now to enter your restored system."

@@ -4,8 +4,27 @@
 # Snapper positional arguments
 EVENT="$1"
 
-# Configuration
-ESP_MOUNT="/boot"
+# --- ESP DETECTION ---
+# Attempt to find the ESP path using bootctl
+ESP_MOUNT=$(bootctl -p 2>/dev/null)
+
+# Fallback: Check common mount points if bootctl is unavailable or fails
+if [[ -z "$ESP_MOUNT" ]]; then
+    for path in /efi /boot /boot/efi; do
+        if mountpoint -q "$path" || [[ -d "$path/EFI" ]]; then
+            ESP_MOUNT="$path"
+            break
+        fi
+    done
+fi
+
+# Exit if no ESP is detected to avoid errors
+if [[ -z "$ESP_MOUNT" ]]; then
+    echo "Error: No EFI System Partition detected."
+    exit 1
+fi
+
+# --- CONFIGURATION PATHS ---
 SNAP_PATH="/.snapshots"
 EFI_LINUX="$ESP_MOUNT/EFI/Linux"
 POOL_DIR="$EFI_LINUX/pool"
